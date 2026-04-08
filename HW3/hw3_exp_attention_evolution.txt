@@ -1,0 +1,7 @@
+# Experiment C: attention evolution
+layer=1 head=2 max_len=28
+epoch val_ppl
+1 83.50216534103683
+5 48.61151270832423
+15 43.13393616647218
+25 41.3334276199418

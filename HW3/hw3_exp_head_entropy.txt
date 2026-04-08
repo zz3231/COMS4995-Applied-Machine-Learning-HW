@@ -1,0 +1,9 @@
+# Experiment E: head entropy layer 1
+h0 2.0755
+h1 1.6766
+h2 1.8952
+h3 0.4809
+h4 1.6043
+h5 1.9276
+h6 1.5482
+h7 0.6498

@@ -1,34 +1,33 @@
 \documentclass[10pt]{article}
-\usepackage[margin=1in]{geometry}
+\usepackage[margin=0.95in]{geometry}
 \usepackage{graphicx}
 \usepackage{booktabs}
 \usepackage{amsmath}
 \usepackage{hyperref}
 \usepackage{float}
-\usepackage[font=small,labelfont=bf]{caption}
+\usepackage[font=footnotesize,labelfont=bf]{caption}
 \usepackage{parskip}
 \usepackage{microtype}
-\usepackage{enumitem}
 
 \hypersetup{colorlinks=true, linkcolor=blue, urlcolor=blue}
 
-\setlength{\parskip}{0.35em}
+\setlength{\parskip}{0.26em}
 \setlength{\parindent}{0em}
 \setlength{\textfloatsep}{5pt plus 1pt minus 1pt}
 \setlength{\floatsep}{4pt plus 1pt minus 1pt}
 \setlength{\intextsep}{4pt plus 1pt minus 1pt}
-\setlength{\abovecaptionskip}{4pt}
+\setlength{\abovecaptionskip}{3pt}
 \setlength{\belowcaptionskip}{2pt}
 
 \makeatletter
 \renewcommand\section{\@startsection{section}{1}{\z@}%
-  {-2ex plus -0.5ex minus -.2ex}{1.2ex plus .2ex}{\normalfont\Large\bfseries}}
+  {-1.7ex plus -0.4ex minus -.2ex}{1ex plus .2ex}{\normalfont\Large\bfseries}}
 \renewcommand\subsection{\@startsection{subsection}{2}{\z@}%
-  {-1.5ex plus -0.5ex minus -.2ex}{0.8ex plus .2ex}{\normalfont\large\bfseries}}
+  {-1.3ex plus -0.3ex minus -.2ex}{0.6ex plus .2ex}{\normalfont\large\bfseries}}
 \makeatother
 
-\title{\textbf{Assignment 3: Transformer is All You Need}\\[0.2em]
-\large Tiny Shakespeare Next-Token Model (From-Scratch Transformer)}
+\title{Assignment 3: Transformer is All You Need\\
+{\large Tiny Shakespeare Next-Token Model (From-Scratch Transformer)}}
 \author{Andy Zhang}
 \date{}
 
@@ -36,150 +35,135 @@
 \maketitle
 \vspace{-1em}
 
-\noindent\textbf{Code:} \url{https://github.com/zz3231/COMS4995-Applied-Machine-Learning-HW/tree/main/HW3}
+\noindent Code: \url{https://github.com/zz3231/COMS4995-Applied-Machine-Learning-HW/tree/main/HW3}
 
-%%% ---------------------------------------------------------------
 \section{Introduction}
 
-This report presents a \textbf{minimal causal Transformer} built from scratch in PyTorch for \textbf{next-token prediction} on Tiny Shakespeare ($\sim$1.1\,M chars). The training objective is autoregressive language modeling: maximize $\log p(x_t \mid x_{<t})$ via cross-entropy. We report $\mathrm{PPL} = \exp(\mathrm{CE}_{\mathrm{val}})$; lower is better.
+Causal language modeling on a fixed corpus is a clean testbed for the Transformer: every position is a supervised classification problem over the vocabulary, and the only structural prior is the ordering of tokens. Tiny Shakespeare is small enough to train a hand-written model on one GPU, yet large enough that nontrivial syntactic and stylistic regularities appear in the data. This work implements a compact decoder-only Transformer in PyTorch---Byte-Pair Encoding capped at $500$ types (trained on the training split only), two layers, hidden width $128$, eight heads, RMSNorm, sinusoidal positional encodings, and causal self-attention---and reports validation perplexity $\mathrm{PPL} = \exp(\mathrm{CE}_{\mathrm{val}})$ as the primary score.
 
-The architecture uses two Transformer blocks, $d_{\mathrm{model}}=128$, eight heads, FFN width 512, RMSNorm, sinusoidal PE, and causal self-attention. Tokenization is BPE with vocab $\leq 500$, fit on training text only. Beyond the main run we present a \textbf{PE ablation}, a \textbf{shorter-context} study, and qualitative generation.
+The best model in the main configuration reaches $\mathrm{PPL} = 41.33$ after $25$ epochs with AdamW at learning rate $3 \times 10^{-4}$. The rest of the paper connects that aggregate number to internal behavior. Section~2 summarizes data and training protocol. Section~3 walks through training curves, attention maps at convergence, the evolution of one head across checkpoints, a layer-$1$ entropy summary across heads, a positional-encoding ablation, a shorter-context run, a small learning-rate study, and a brief generation sample. Section~4 pulls the threads together and notes limitations.
 
-%%% ---------------------------------------------------------------
 \section{Methods}
 
-\subsection{Data and tokenization}
-The first 80\% of characters form \texttt{train\_text}; the rest is \texttt{val\_text}. A ByteLevel BPE tokenizer is trained on \texttt{train\_text} alone (\texttt{vocab\_size}$=$500, \texttt{min\_frequency}$=$2). Overlapping windows of \textbf{65} tokens with stride \textbf{32} yield $\sim$12.8k training sequences, each providing 64 supervised next-token positions.
+The raw file is split $80\%/20\%$ by character index so validation text never appears in the training string. A ByteLevel BPE tokenizer is fit on \texttt{train\_text} with \texttt{vocab\_size} $= 500$ and \texttt{min\_frequency} $= 2$. Encoded sequences are cut into overlapping windows of length $65$ with stride $32$, yielding about $1.28 \times 10^4$ training windows and $64$ next-token targets per window.
 
-\subsection{Architecture}
-Pre-LN blocks: $x \leftarrow x + \mathrm{Drop}(\mathrm{Sublayer}(\mathrm{RMSNorm}(x)))$ for both attention and FFN. Causal MHA computes $\mathrm{softmax}(QK^\top\!/\sqrt{d_k} + M)\,V$ where $M$ is $-\infty$ above the diagonal. Sinusoidal PE is added to embeddings scaled by $\sqrt{d_{\mathrm{model}}}$. A final RMSNorm + linear head produces vocabulary logits ($\sim$$10^6$ params total).
+Each Transformer block uses pre-layer normalization and residual connections around causal multi-head attention and a two-layer feed-forward network. Attention scores use scaled dot products with a lower-triangular mask ($-\infty$ above the diagonal) before softmax. Sinusoidal positional encodings are added to token embeddings after scaling embeddings by $\sqrt{d_{\mathrm{model}}}$. The stack ends with RMSNorm and a linear map to logits. Parameter count is on the order of $10^6$.
 
-\subsection{Training}
-AdamW (lr $3\!\times\!10^{-4}$, wd $0.01$), batch 32, dropout 0.1, gradient clip 1.0, 25 epochs, fixed seed. Validation uses \texttt{torch.no\_grad()}.
+Optimization uses AdamW with learning rate $3 \times 10^{-4}$, weight decay $0.01$, batch size $32$, dropout $0.1$, and gradient clipping at global norm $1.0$. Random seeds are fixed for reproducibility; validation uses \texttt{torch.no\_grad()}. For analysis, checkpoints are saved after epochs $1$, $5$, $15$, and $25$. A second model omits sinusoidal PE but is otherwise identical; it trains $15$ epochs and is compared epoch-by-epoch to the first $15$ epochs of the main run. A third model uses block size $33$ and stride $16$ for $12$ epochs. For layer $1$, mean row entropy of attention weights is computed on a fixed validation prefix. Finally, three fresh initializations each run $8$ epochs at learning rates $10^{-4}$, $3 \times 10^{-4}$, and $10^{-3}$ with the same optimizer settings otherwise. Numeric traces are logged in \texttt{hw3\_exp\_*.txt}.
 
-\subsection{Experiments}
-\textbf{(A) PE ablation:} same architecture without sinusoidal PE, 15 epochs. Figure~\ref{fig:ablate} aligns the first 15 epochs of the main model against the full no-PE run for epoch-matched comparison.
-\textbf{(B) Shorter context:} block 33 / stride 16 (32 positions), 12 epochs. Not directly comparable to the main model (different $T$, windows, epochs, initialization); probes the $O(T^2)$ compute tradeoff.
-
-%%% ---------------------------------------------------------------
 \section{Results}
 
-\subsection{Training curves and perplexity}
+\subsection{Training dynamics}
+Figure~\ref{fig:loss} plots training and validation cross-entropy and validation perplexity. Training loss falls from roughly $5.06$ to $3.38$ over $25$ epochs; validation loss ends at $3.72$, which corresponds to $\mathrm{PPL} = 41.33$. The two curves start close, then the training loss pulls away after about epoch $5$. That widening gap is the usual signature of a model that is beginning to memorize idiosyncrasies of the training windows while still improving on held-out text---here validation perplexity decreases throughout, so there is no evidence of a damaging overfit regime within this horizon.
 
-Figure~\ref{fig:loss} shows CE and PPL over 25 epochs. Train CE drops steeply (5.06 $\to$ 3.74 by epoch 5) then decelerates to \textbf{3.38}; val CE plateaus earlier at \textbf{3.72} (PPL $=$ \textbf{41.33}). The widening train--val gap after epoch $\sim$5 signals mild overfitting: the model memorizes training n-grams faster than it generalizes, though the gap stays modest (0.34 nats by epoch 25). PPL improves most dramatically in the first five epochs (83.5 $\to$ 48.6) with diminishing returns thereafter.
+The perplexity curve makes the same story easier to read in ``effective branching factor'' units. Most of the improvement happens before epoch $5$: PPL drops from $83.5$ to about $48.6$. Later epochs chip away at error more slowly, which suggests that coarse structure (punctuation, frequent subwords, line-level habits) is learned first and rare continuations dominate the remaining loss.
 
 \begin{figure}[H]
 \centering
-\includegraphics[width=0.65\textwidth]{fig_01_loss_ppl.png}
-\caption{Train/val CE (top) and val PPL (bottom). The train--val gap widens after epoch 5.}
+\includegraphics[width=0.58\textwidth]{fig_01_loss_ppl.png}
+\caption{Training and validation cross-entropy (top) and validation perplexity (bottom).}
 \label{fig:loss}
 \end{figure}
 
 \begin{table}[H]
-\centering\small
-\caption{Hyperparameters and final metrics.}
+\centering
+\scriptsize
+\setlength{\tabcolsep}{3pt}
+\caption{Summary of reported validation perplexities.}
+\label{tab:key}
 \begin{tabular}{@{}ll@{}}
 \toprule
-Setting & Value \\
+Item & Value \\
 \midrule
-Vocabulary & 500 BPE (train-only) \\
-Block / stride (main) & 65 / 32 (64 positions) \\
-$d_{\mathrm{model}}$, layers, heads, $d_{\mathrm{ff}}$ & 128, 2, 8, 512 \\
-Optimizer & AdamW, lr$=3\!\times\!10^{-4}$, wd$=0.01$, clip$=1.0$ \\
-Main: 25 ep.\ / val CE / PPL & 3.72 / \textbf{41.33} \\
-No-PE: 15 ep.\ / val PPL & \textbf{43.58} \\
-Short ctx: blk 33, 12 ep.\ / PPL & \textbf{40.19} \\
+Main run ($25$ ep) & val CE $3.72$; PPL $41.33$ \\
+Checkpoints (L1H2 evolution) & ep1 $83.50$; ep5 $48.61$; ep15 $43.13$; ep25 $41.33$ \\
+No sinusoidal PE ($15$ ep) & final PPL $43.58$ (main at ep15: $43.13$) \\
+Short context, block $33$ ($12$ ep) & final PPL $40.19$ \\
+LR probe ($8$ ep each) & final PPL: $10^{-4}$ $55.25$; $3{\times}10^{-4}$ $45.99$; $10^{-3}$ $41.39$ \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-%%% ---------------------------------------------------------------
-\subsection{Attention visualization and analysis}
-\label{sec:attention}
+\subsection{Attention at convergence}
+Figure~\ref{fig:att} compares layer $0$, head $0$ and layer $1$, head $2$ on the first sequence of a validation batch (ByteLevel subword labels on both axes). The decoded prefix reads like early modern dialogue: roughly ``you are, That is, a woman; if you be more, you're none; if you be.'' Every panel respects the causal mask: each row has support only on columns to the left of the diagonal, so no query looks past its own position.
 
-Figures~\ref{fig:att1}--\ref{fig:att2} show causal attention for a validation prefix that reads approximately \emph{``you are, That is, a woman; if you be more, you're none; If you be''} (each axis cell is one BPE token). Both maps are from the \textbf{converged} model (epoch 25); the strictly \textbf{lower-triangular} structure confirms the causal mask.
+The layer-$0$ map reads as a local mixer. Early positions concentrate probability on themselves and on immediate neighbors, producing a visible diagonal band. There is also a pronounced off-diagonal link from the piece ``om'' (inside ``woman'') back to ``are'', which is consistent with learning subject--predicate structure in this corpus. Commas and semicolons participate in vertical and horizontal structure, as if the head uses punctuation to segment clauses. For queries late in the prefix, weights spread over many keys at moderate magnitude rather than collapsing to a single predecessor; that pattern fits the idea that the first block aggregates a broad context vector for the second block to refine.
 
-\paragraph{Layer 0, head 0 (Figure~\ref{fig:att1}).}
-\begin{enumerate}[nosep,leftmargin=*]
-  \item \textbf{Diagonal / recency bias.} Early tokens (``y'', ``ou'', ``are'') place most weight on themselves or their immediate predecessor, forming a bright band along the diagonal---typical of lower-layer heads that propagate local subword identity into the residual stream.
-  \item \textbf{Content-anchored links.} ``om'' (from ``woman'') attends sharply to ``are'' (weight $\approx$0.9), suggesting the model has learned a distributional association between the copula and its noun complement. The semicolon at position 12 focuses on the preceding ``if'', linking the conditional clause head.
-  \item \textbf{Diffuse spread for later queries.} Positions with $\geq$15 available keys show broad, light shading across many past tokens rather than sharp peaks---this head mixes wide context for downstream layers.
-\end{enumerate}
-
-\paragraph{Layer 1, head 2 (Figure~\ref{fig:att2}).}
-Compared to L0H0, this deeper head shows \textbf{sparser, more peaked} attention:
-\begin{enumerate}[nosep,leftmargin=*]
-  \item \textbf{Long-range ``you''-tracking.} ``is'' (pos.\ 6) attends strongly back to ``ou'' (pos.\ 2, part of ``you'')---a four-token span. ``more'' (pos.\ 16) concentrates weight $\approx$0.7 on ``you'' (pos.\ 14); ``re'' (pos.\ 20, part of ``you're'') reaches back to ``you'' as well. This head appears to \textbf{track the pronoun ``you''} across the sequence, a rudimentary subject-tracking role.
-  \item \textbf{Punctuation as clause anchors.} Commas and semicolons receive concentrated attention from later queries, serving as positional landmarks for clause boundaries.
-  \item \textbf{Head diversity.} Comparing the same prefix across two heads reveals clear functional differentiation: L0H0 favors local, diffuse mixing; L1H2 favors sparse, long-range content-specific links. This division of labor mirrors findings in larger Transformer LMs and shows that multi-head attention learns complementary features even at small scale.
-\end{enumerate}
-
-\textbf{Limitation.} Heatmaps are from the converged model only; we did not render attention at early epochs. However, the steep initial PPL drop suggests attention specialization likely emerges within the first few epochs.
+Layer $1$, head $2$ is noticeably sparser. The row for ``is'' peaks on ``ou'' (part of ``you''). The row for ``more'' peaks on an earlier occurrence of ``you''. The row for ``re'' in ``you're'' also reaches back toward ``you''. Several delimiter tokens attract mass from later rows. Taken together, the two heads illustrate a division of labor that shows up even in a two-layer stack: one head spreads mass locally and through punctuation, while another acts more like a pointer that tracks a repeated pronoun and clause boundaries.
 
 \begin{figure}[H]
 \centering
-\includegraphics[width=0.68\textwidth]{fig_02_attention_L0H0.png}
-\caption{Layer 0, head 0: note the diagonal recency band and the ``om'' $\to$ ``are'' link.}
-\label{fig:att1}
+\begin{minipage}[t]{0.49\textwidth}\centering
+\includegraphics[width=\linewidth]{fig_02_attention_L0H0.png}
+\end{minipage}\hfill
+\begin{minipage}[t]{0.49\textwidth}\centering
+\includegraphics[width=\linewidth]{fig_03_attention_L1H2.png}
+\end{minipage}
+\caption{Causal attention on a fixed validation prefix. Left: layer $0$, head $0$. Right: layer $1$, head $2$.}
+\label{fig:att}
 \end{figure}
+
+\subsection{How one head changes during training}
+Figure~\ref{fig:evol} holds the prefix, layer, and head fixed (layer $1$, head $2$) but swaps in weights from epochs $1$, $5$, $15$, and $25$. All four panels share one color scale, so brightness is comparable across time. Validation PPL at those checkpoints is listed in Table~\ref{tab:key}; it decreases monotonically as the maps evolve.
+
+At epoch $1$ the dominant feature is a tall vertical band on an early key (``That''): many later queries assign a large fraction of mass to the same token regardless of their own content. That is a simple strategy available to a nearly random head: attend to a salient early token. By epoch $5$ the band is still there but the map is less uniform. By epoch $15$ the column on ``That'' has weakened and several rows show sharp, interpretable peaks---the ``is''--``ou'' link is already strong. By epoch $25$ the head no longer relies on one global column; instead, different queries distribute attention over several predecessors in a way that looks tuned to the specific prefix. The qualitative trajectory is therefore not monotonic sparsification: the map becomes more structured in the middle of training, then somewhat more diffuse again at convergence, while the loss metric improves throughout.
 
 \begin{figure}[H]
 \centering
-\includegraphics[width=0.68\textwidth]{fig_03_attention_L1H2.png}
-\caption{Layer 1, head 2: same prefix; sparser peaks, long-range ``you''-tracking.}
-\label{fig:att2}
+\includegraphics[width=0.88\textwidth]{fig_06_attention_evolution.png}
+\caption{Layer $1$, head $2$ on the same prefix at epochs $1$, $5$, $15$, $25$ (shared color scale).}
+\label{fig:evol}
 \end{figure}
 
-%%% ---------------------------------------------------------------
-\subsection{Positional encoding ablation}
+\subsection{Entropy across heads and sensitivity to learning rate}
+The left panel of Figure~\ref{fig:entlr} summarizes mean row entropy for each head in layer $1$ on the same prefix used above. Entropy is $-\sum_j p_{ij}\log p_{ij}$ averaged over query rows $i$. High values mean the head spreads probability over many keys; low values mean each row is peaked on a small set.
 
-At epoch 15 the main model reaches PPL \textbf{43.13} while the no-PE model reaches \textbf{43.58}---a gap of 0.45 (Figure~\ref{fig:ablate}). The PE model is lower at \textbf{nearly every epoch}, confirming a systematic benefit. The gap is small because (i) the corpus has strong local statistical cues (capitalized line-starts, newline patterns) that partially encode position even without PE, and (ii) with only $T=64$, positional ambiguity is limited. Over the full 25-epoch main run PPL drops further to 41.33; since the no-PE run was capped at 15 epochs, we cannot attribute the entire 2.25-point difference to PE.
+Heads $3$ and $7$ have the lowest entropy (about $0.48$ and $0.65$ nats): they behave like sharp routers. Heads $0$, $2$, and $5$ sit at the top of the range (about $2.08$, $1.90$, and $1.93$) and behave more like wide integrators. Head $2$, which Figures~\ref{fig:att}--\ref{fig:evol} visualize, falls in the upper middle of the distribution, which matches the observation that its maps are neither uniform nor one-hot on every row. The spread between the min and max head is a compact summary that ``multi-head'' here really is multi-behavior: heads are not interchangeable at this depth.
+
+The right panel of Figure~\ref{fig:entlr} shows three independent eight-epoch runs at $10^{-4}$, $3 \times 10^{-4}$, and $10^{-3}$. Final validation PPL is about $55.3$, $46.0$, and $41.4$ respectively. A factor-of-ten increase in learning rate moves the endpoint close to the $25$-epoch main run's PPL in only eight epochs, which underscores how strongly optimization speed depends on step size on this problem. It would be a mistake to read the chart as proof that $10^{-3}$ is always the right choice for $25$ epochs or for other datasets: larger steps can diverge when clipping is removed or when the architecture changes. The main experiment still uses $3 \times 10^{-4}$ for the long schedule as a conservative default. The full epoch-by-epoch traces show the same ordering at every step: $10^{-4}$ starts near $164$ PPL at epoch $1$ and descends slowly; $10^{-3}$ starts near $53$ and flattens early.
 
 \begin{figure}[H]
 \centering
-\includegraphics[width=0.55\textwidth]{fig_04_ablation_pe.png}
-\caption{PE ablation: the PE model (blue) is consistently below no-PE (red) over 15 epochs.}
-\label{fig:ablate}
+\begin{minipage}[t]{0.49\textwidth}\centering
+\includegraphics[width=\linewidth]{fig_07_head_entropy_L1.png}
+\end{minipage}\hfill
+\begin{minipage}[t]{0.49\textwidth}\centering
+\includegraphics[width=\linewidth]{fig_08_lr_sensitivity.png}
+\end{minipage}
+\caption{Left: mean attention row entropy per head in layer $1$. Right: validation PPL for three learning rates ($8$ epochs each, fresh initialization).}
+\label{fig:entlr}
 \end{figure}
 
-%%% ---------------------------------------------------------------
-\subsection{Shorter-context experiment}
+\subsection{Positional encodings and shorter context}
+Figure~\ref{fig:ab} (left) overlays validation perplexity for the main model truncated to $15$ epochs and the no--positional-encoding model for the same $15$ epochs. The sinusoidal curve lies below the no-PE curve at essentially every epoch; at epoch $15$ the gap is about $0.45$ PPL ($43.13$ versus $43.58$). The effect is real but modest. One interpretation is that with only $64$ supervised positions per window, and with Shakespeare's strong line breaks and capitalization, the model can partially infer order from token identity even when absolute position is not injected. A longer context or a less structured corpus would likely widen the gap.
 
-With block 33 / stride 16 the model starts at PPL $\sim$63 and reaches \textbf{40.19} by epoch 12 (Figure~\ref{fig:short}). Starting PPL is lower than the main model's $\sim$83 because shorter windows average over fewer conditioning tokens, making the per-position prediction ``easier.'' The key takeaway is \textbf{operational}: halving $T$ (64 $\to$ 32) reduces the attention tensor from $B\!\times\!H\!\times\!64\!\times\!64$ to $B\!\times\!H\!\times\!32\!\times\!32$---a $4\times$ savings in attention memory and FLOPs---at the cost of losing long-range dependencies beyond 32 tokens.
+The right panel trains a separate model with block length $33$ and stride $16$ for $12$ epochs. Final PPL is $40.19$, which is lower than the main run's final value, but the curves are not comparable as a pure ``which model is better'' statement: each prediction step conditions on half as many past tokens, so the per-step task is easier and the initial PPL is much lower ($\sim 63$ versus $\sim 83$ at the first epoch). The practical point is compute: in this implementation, attention cost scales roughly with the square of sequence length among other terms, so halving the block length saves about a factor of four in that component at the price of throwing away tokens beyond the shorter horizon.
 
 \begin{figure}[H]
 \centering
-\includegraphics[width=0.55\textwidth]{fig_05_short_context.png}
-\caption{Shorter context (block 33): validation PPL over 12 epochs.}
-\label{fig:short}
+\begin{minipage}[t]{0.49\textwidth}\centering
+\includegraphics[width=\linewidth]{fig_04_ablation_pe.png}
+\end{minipage}\hfill
+\begin{minipage}[t]{0.49\textwidth}\centering
+\includegraphics[width=\linewidth]{fig_05_short_context.png}
+\end{minipage}
+\caption{Left: positional encoding ablation ($15$ epochs). Right: shorter context (block $33$, $12$ epochs).}
+\label{fig:ab}
 \end{figure}
 
-%%% ---------------------------------------------------------------
-\subsection{Qualitative generation}
+\subsection{Sample generation}
+Sampling with temperature $0.85$ from a short validation prompt produces comma-heavy fragments and archaic-looking spellings mixed with garbled invented subwords (for example ``thereock'', ``prifft''). Coherence is limited, which is expected given model width, vocabulary size, and training budget.
 
-Temperature-0.85 sampling from the trained model produces Shakespeare-\emph{flavored} but incoherent text: \emph{``you are, That is, a woman; if you be more, you'er's thereock, For thought, prifft being in the dieves\ldots''}. The model captures comma-separated clause structure, pseudo-archaic pronouns (``Ay'', ``Ty''), and stage-direction labels, but hallucinates many subwords (``thereock'', ``prifft''). This is expected given $\sim$$10^6$ params, 500-token vocab, and 25 epochs of training.
-
-%%% ---------------------------------------------------------------
 \section{Discussion}
 
-\textbf{Attention patterns.}
-The two visualized heads (\S\ref{sec:attention}) show complementary roles: L0H0 acts as a \emph{local mixer} (diagonal recency, diffuse spread), while L1H2 is a \emph{content pointer} (sparse ``you''-tracking, punctuation anchoring). This early-layer-local / later-layer-global stratification mirrors findings in large-scale LMs and demonstrates that functional head specialization emerges even in a two-layer model.
+The training curves show a healthy optimization trajectory with mild train--val separation but no validation blowup. Attention visualizations make the causal constraint concrete and show that even a shallow network can split roles across heads: one head in layer $0$ emphasizes locality and punctuation, while a head in layer $1$ forms sparse long-range links that track repeated words. The checkpoint sequence for layer $1$, head $2$ adds a temporal dimension: an early ``anchor token'' strategy is replaced by sharper structure mid-training, then by a more distributed pattern at convergence, all while perplexity decreases. That non-monotonic visual evolution is a useful reminder that interpretability plots are not the same as the loss; a head can look ``messier'' at the end while still representing a better function.
 
-\textbf{Hyperparameter stability.}
-Learning rate was the most sensitive knob: values above $\sim$$10^{-3}$ caused loss spikes, below $\sim$$10^{-4}$ slowed convergence. Gradient clipping (norm 1.0) prevented the occasional explosion that AdamW alone could not absorb. Batch size 32 and weight decay 0.01 were stable defaults.
+The entropy bars quantify head diversity at layer $1$ and align with the qualitative contrast between peaked and diffuse maps. The learning-rate probe isolates step size as a dominant lever on an eight-epoch horizon, which helps explain why training recipes spend so much time on LR schedules and clipping. The PE ablation supports the standard claim that position information matters, while also showing that the benefit size depends on context length and data regularities. The short-context experiment is best read as a hardware-oriented counterpoint: smaller $T$ buys quadratic savings.
 
-\textbf{Positional encodings.}
-Self-attention without PE is permutation-invariant: it treats any token permutation identically. Sinusoidal PE breaks this symmetry; our ablation confirms a consistent but small benefit. RoPE (rotary PE) is an alternative that injects position into $Q,K$ products rather than additive embeddings, potentially offering better length extrapolation.
+This project stays on the supervised next-token objective. Methods that fine-tune with human feedback optimize a different signal---typically a scalar reward estimated from preferences---so the training loop and failure modes differ from cross-entropy on raw text. Scaling up depth, width, and context would change both perplexities and attention interpretations; the patterns described here should be treated as qualitative guides rather than universal laws.
 
-\textbf{Runtime bottlenecks.}
-The dominant cost is the $O(BHT^2)$ attention score tensor. The short-context experiment directly demonstrates the $4\times$ savings from halving $T$. Modern solutions include FlashAttention (fused softmax kernel, avoids materializing $T\!\times\!T$) and KV caching at inference (avoids recomputing past keys/values during autoregressive generation); neither was implemented here.
-
-\textbf{Course context.}
-This assignment performs \textbf{supervised} next-token prediction with a fixed CE loss. This contrasts with RLHF/PPO (L11), where a policy gradient optimizes a learned reward model trained on human preferences---our work sits on the ``pretraining'' side of that divide.
-
-%%% ---------------------------------------------------------------
 \section{AI Tool Usage Disclosure}
 
-Chat-based AI tools helped with notebook scaffolding, plotting boilerplate, and a first-draft LaTeX template. I \textbf{implemented} the model components (RMSNorm, causal MHA, FFN), \textbf{ran all experiments} on Colab GPU, \textbf{inspected every figure} to write figure-grounded analysis (e.g., the ``om''$\to$``are'' and ``you''-tracking observations in \S\ref{sec:attention}), \textbf{verified} all reported numbers against notebook output, and \textbf{revised} the report text for accuracy. Figures are the notebook's saved \texttt{fig\_*.png} files without modification.
+I used interactive coding assistants for early notebook organization and plotting boilerplate. I wrote and debugged the model code, ran all training and experiments, exported figures \texttt{fig\_01} through \texttt{fig\_08}, and drafted this report, then checked every number against notebook output and \texttt{hw3\_exp\_*.txt}.
 
 \end{document}
