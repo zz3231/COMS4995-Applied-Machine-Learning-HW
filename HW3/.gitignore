@@ -1,0 +1,15 @@
+__pycache__/
+.ipynb_checkpoints/
+*.aux
+*.log
+*.out
+.DS_Store
+# LaTeX
+*.synctex.gz
+*.fdb_latexmk
+*.fls
+# Assignment handout (do not publish)
+_A3__*.pdf
+*_A3__*.pdf
+# Large duplicate notebook
+HW3_executed.ipynb
